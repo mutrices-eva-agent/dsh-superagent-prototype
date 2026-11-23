@@ -226,7 +226,8 @@ describe('feishu source', () => {
     await expect(recover()).rejects.toThrow('outside the requested chat or thread')
     // A topic's page that holds a message of another topic.
     h.store.set('feishu-history-threads:oc_team', { omt_1: now })
-    lark.mockResolvedValueOnce({ has_more: false, items: [] }).mockResolvedValueOnce({ has_more: false, items: [message({ thread_id: 'omt_2' })] })
+    lark.mockResolvedValueOnce({ has_more: false, items: [] }).mockResolvedValueOnce({ has_more: false, messages: [] })
+      .mockResolvedValueOnce({ has_more: false, items: [message({ thread_id: 'omt_2' })] })
     await expect(recover()).rejects.toThrow('outside the requested chat or thread')
     h.store.set('feishu-history-threads:oc_team', {})
     const stuck = { has_more: true, page_token: 'p1', items: [] }
@@ -258,6 +259,29 @@ describe('feishu source', () => {
     expect(lark.mock.calls.filter(([args]) => args[1] === '+threads-messages-list')).toHaveLength(1)
     h.store.close()
   })
+  it('recovers a mention in an undiscovered topic that chat history omits', async () => {
+    const h = host()
+    vi.spyOn(h.commands, 'withSignal').mockReturnValue(h.commands)
+    const since = new Date(Date.now() - 60_000).toISOString()
+    const until = new Date().toISOString()
+    const message = { message_id: 'om_mention', chat_id: 'oc_team', create_time: String(Date.now() - 1000),
+      root_id: 'om_root', thread_id: 'omt_new', sender: { id: MEMBER, sender_type: 'user' },
+      body: { content: '{"text":"@_user_1 fix it"}' }, mentions: [{ id: 'ou_bot', key: '@_user_1', name: 'Bot' }] }
+    const lark = vi.spyOn(h.commands, 'lark').mockImplementation(async args => {
+      if (args[1] === '+messages-search') return { has_more: false, messages: [{ message_id: message.message_id,
+        chat_id: message.chat_id, thread_id: message.thread_id, create_time: message.create_time }] }
+      const params = JSON.parse(args[args.indexOf('--params') + 1]!) as { container_id_type: string }
+      return { has_more: false, items: params.container_id_type === 'thread' ? [message] : [] }
+    })
+    await backfillChat(h, 'oc_team', false, since, until, new AbortController().signal)
+    expect(h.receive.mock.calls.map(([trigger]) => trigger.meta.messageId)).toEqual(['om_mention'])
+    expect(h.receive.mock.calls[0]![0]).toMatchObject({ addressed: 'mention', text: '@Bot fix it',
+      threads: [{ source: 'feishu', id: 'oc_team:om_root' }] })
+    expect(lark).toHaveBeenCalledWith(['im', '+messages-search', '--chat-id', 'oc_team', '--is-at-me',
+      '--start', since.replace(/\.\d{3}Z$/, '+00:00'), '--end', until.replace(/\.\d{3}Z$/, '+00:00'),
+      '--page-size', '50', '--no-reactions'])
+    h.store.close()
+  })
   it('recovers the topics of a chat while they had a message in the last two weeks, and forgets quieter ones', async () => {
     const h = host()
     const day = 24 * 3600_000
@@ -267,6 +291,7 @@ describe('feishu source', () => {
     const scans: string[] = []
     vi.spyOn(h.commands, 'withSignal').mockReturnValue(h.commands)
     vi.spyOn(h.commands, 'lark').mockImplementation(async args => {
+      if (args[1] === '+messages-search') return { has_more: false, messages: [] }
       const params = JSON.parse(args[args.indexOf('--params') + 1]!) as { container_id_type: string; container_id: string }
       scans.push(params.container_id)
       // Each day's chat scan yields one new thread; thread scans return no further messages.
