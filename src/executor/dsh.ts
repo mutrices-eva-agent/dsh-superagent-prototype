@@ -14,6 +14,7 @@ import type { Store } from '../app/store.ts'
 import { Later, type Effects } from '../app/effects.ts'
 import { executionRoot, type Variable } from '../app/execution-environment.ts'
 import type { Sessions } from '../app/sessions.ts'
+import { requestedModel } from '../app/requested-model.ts'
 import { WorktreeNameSchema } from '../app/assessment.ts'
 import { resultRelay } from '../app/notices.ts'
 import type { HealthEntry } from '../infra/health.ts'
@@ -438,7 +439,14 @@ export class DshExecutor implements Executor {
     }
     if (!current()) return
     const sessionId = workerSessionId(ticket.id)
-    const agent = await this.host.sessions.ensure(sessionId, workspace, ticket.title, 'worker')
+    const first = `assignment:${ticket.id}`
+    const later = ticket.assignments.length > 1
+    const told = later && await this.host.sessions.holds(sessionId, first)
+    if (!current()) return
+    const model = !told && source?.human && ticket.mandate.strength === 'explicit'
+      ? await requestedModel(this.host.context, source.text) : undefined
+    if (!current()) return
+    const agent = await this.host.sessions.ensure(sessionId, workspace, ticket.title, 'worker', model !== undefined)
     if (!current()) return
     // The background work of the Assignment this one replaces stops first, so its end does not clear this one's message.
     await this.stopped(ticket.id)
@@ -448,10 +456,6 @@ export class DshExecutor implements Executor {
     for (const id of this.host.store.tickets.get(ticket.id)?.undelivered ?? []) agent.inbox.remove(this.host.sessions.promptedId(id))
     // The first message holds the assignment and the source Trigger; a later Assignment's says only what is new, unless the
     // Session lost the first, such as when someone deleted it.
-    const first = `assignment:${ticket.id}`
-    const later = ticket.assignments.length > 1
-    const told = later && await this.host.sessions.holds(sessionId, first)
-    if (!current()) return
     const retried = ticket.assignments.at(-2)?.endedReason === 'retried' ? { note: RETRIED } : {}
     const assignmentText = ticket.execution?.assignment ?? ''
     const { text: brief, chars, read } = capped(assignmentText, ASSIGNMENT_CHARS, `ticket/${ticket.id}/assignment`)
@@ -465,7 +469,7 @@ export class DshExecutor implements Executor {
     const requestId = later ? `assignment:${ticket.id}:${assignment.id}` : first
     await this.host.sessions.prompt(sessionId, requestId, text, 'queue',
       () => { if (!current()) throw new Error('Launch authorization changed before worker delivery') },
-      () => { this.host.engine.assignmentStarted(ticket.id, assignment.id) })
+      () => { this.host.engine.assignmentStarted(ticket.id, assignment.id) }, { ...(!told ? { assignment: true, ...(model ? { model } : {}) } : {}) })
     this.host.engine.assignmentStarted(ticket.id, assignment.id)
   }
   /** Returns the stored ticket for `agent` when it is a worker session, or undefined otherwise. */

@@ -21,6 +21,28 @@ async function fixture() {
   const record = (selection: ModelSelection) => { const event = session.append('request/header', { header: { config: selection }, reason: 'initial' }); ctx.emit('session/event', session, event) }
   return { ctx, agent, host, resolve, flush, request, record }
 }
+it('given_an_executor_default_when_the_router_selects_before_assembly_then_the_first_request_uses_its_choice', async () => {
+  const { ctx, agent, host, request } = await fixture()
+  const routed = { provider: 'router', model: 'chosen', reasoningEffort: ReasoningEffortId('low') }
+  let selection: ModelSelection | undefined
+  const select = (value: ModelSelection) => { selection = value; agent.session.append('model/selection', value) }
+  Object.assign(agent, { model: { current: () => selection, select } })
+  Object.defineProperty(host, 'current', { get: () => selection })
+  await initializeRoleModel(ctx, agent, { provider: 'executor', model: 'default', reasoningEffort: 'high' })
+  select(routed)
+  expect((await ctx.systemPrompt.assemble()).variables).toMatchObject({ provider: 'router', model: 'chosen' })
+  expect(await request()).toEqual(routed)
+})
+it('given_an_executor_default_when_no_router_selects_then_the_first_request_uses_the_default', async () => {
+  const { ctx, agent, host, request } = await fixture()
+  const fallback = { provider: 'executor', model: 'default', reasoningEffort: ReasoningEffortId('high') }
+  let selection: ModelSelection | undefined
+  Object.assign(agent, { model: { select(value: ModelSelection) { selection = value; agent.session.append('model/selection', value) } } })
+  Object.defineProperty(host, 'current', { get: () => selection })
+  await initializeRoleModel(ctx, agent, fallback)
+  await ctx.systemPrompt.assemble()
+  expect(await request()).toEqual(fallback)
+})
 it('keeps prompt variables and initial routing on the role model without saving the host default', async () => {
   const { ctx, agent, request, record, flush } = await fixture()
   await initializeRoleModel(ctx, agent, { provider: 'worker-provider', model: 'worker-model' })

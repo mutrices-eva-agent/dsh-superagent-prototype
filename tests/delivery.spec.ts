@@ -33,6 +33,23 @@ function fixture(history: UserMessage[] = []) {
   return { agent, agents, inbox, steer, followup, injected, open, read, close, flush, send, inject, holds, consume, signal }
 }
 
+it('given_an_explicit_model_when_launching_then_selects_it_before_the_assignment_is_claimed', async () => {
+  const f = fixture()
+  const selection = { provider: 'named', model: 'preferred' }
+  const select = vi.fn()
+  Object.assign(f.agent, { model: { select } })
+  f.followup.mockImplementationOnce(message => {
+    expect(select).toHaveBeenCalledWith(selection)
+    expect(message.source).toMatchObject({ kind: 'dsh-superagent', assignment: true, modelPinned: true })
+  })
+  const ctx = new Context()
+  ctx.reflect.provide('agents', f.agents)
+  ctx.reflect.provide('sessionPersistence', { open: f.open, flush: f.flush })
+  await new AgentDelivery(ctx).send(f.agent, 'assignment', 'work', 'queue', f.signal.signal,
+    undefined, undefined, { assignment: true, model: selection })
+  expect(f.followup).toHaveBeenCalledOnce()
+})
+
 it.each(['queue', 'steer'] as const)('delivers %s as an orchestrator relay, deduplicating pending and consumed messages', async mode => {
   const f = fixture()
   await f.send('request', mode)

@@ -28,6 +28,23 @@ const idle = (sessionId: string) => {
   h.ctx.emit('agent/status', { agent, status: 'idle' } as never)
 }
 
+it('given_a_human_model_directive_when_the_worker_claims_its_assignment_then_the_explicit_route_is_already_selected', async () => {
+  h.llm.listProviders.mockReturnValue([{ id: 'gateway', name: 'Gateway' }])
+  h.llm.resolveCallConfig.mockImplementation(async value => {
+    if ((value as { provider: string }).provider === 'fixed') throw new Error('Executor default is unavailable')
+    return value
+  })
+  const settings = h.runtime.store.settings()
+  h.runtime.store.saveSettings({ ...settings, executor: { ...settings.executor, model: { provider: 'fixed', model: 'default' } } })
+  const claims: unknown[] = []
+  h.ctx.on('agent/inbox/claimed', ({ agent, message }) => {
+    if (agent.id.startsWith('worker-')) claims.push({ source: message.source, model: h.agents.get(agent.id)?.model.current() })
+  })
+  await h.acceptedTicket(feishu('3', '@bot Redesign the page, use gateway/lab/model-alpha at high thinking.'))
+  expect(claims).toEqual([{ source: { kind: 'dsh-superagent', form: 'relay', assignment: true, modelPinned: true },
+    model: { provider: 'gateway', model: 'lab/model-alpha', reasoningEffort: 'high' } }])
+})
+
 it('evaluates a message that arrives on a thread while an earlier candidate\'s card waits for its link, in the thread\'s next Eval', async () => {
   const gate = deferred()
   // The first candidate's source link lookup is slow; Feishu allows it up to linkTimeoutMs.

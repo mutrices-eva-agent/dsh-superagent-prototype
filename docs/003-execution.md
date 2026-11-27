@@ -140,7 +140,9 @@ Once a person's message reached a blocked or failed Ticket, the Executor has the
 
 A retry ends the current Assignment and starts a new one in the same Executor Session, directory, branch and pull request.
 
-The Executor model applies only when a Session is created; an existing Session keeps its model.
+The Executor model seeds a new Session. A compatible router can override that starting choice before an assignment’s first request; without a decision the Session keeps its current model. Configure the router to accept `dsh-superagent` assignments to enable this.
+
+An explicit model directive in an admitted human request takes precedence. Use `Use provider/model at high thinking` (with the provider and exact model ID from Harness), or a unique model name from the local provider catalog. Use the fully qualified route if several providers offer the same name. A recognized route that cannot be resolved fails the assignment rather than silently substituting another model.
 ### Restart
 
 Running Assignments end with "host restarted" and new ones start with a recovery note that tells the Executor to check its directory, git history and GitHub before repeating any outside action, oldest Ticket first.

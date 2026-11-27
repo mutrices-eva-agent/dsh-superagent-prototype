@@ -4,6 +4,13 @@ import type { Agent, ModelSelection } from '@deepseek-ai/dsh-agent'
 import { ReasoningEffortId } from '@deepseek-ai/dsh-llm'
 import type { RoleModel } from '../policy.ts'
 
+export function agentModelSelector(agent: Agent): { select(selection: ModelSelection): void } | undefined {
+  const selector: unknown = 'model' in agent ? agent.model : undefined
+  if (typeof selector === 'object' && selector !== null && 'select' in selector && typeof selector.select === 'function') {
+    return selector as { select(selection: ModelSelection): void }
+  }
+}
+
 /** Resolve a configured route through the live provider; catalog membership is not a restriction. */
 export async function resolveRoleModel(ctx: Context, model: RoleModel): Promise<ModelSelection> {
   const value = await ctx.llm.resolveCallConfig({ provider: model.provider, model: model.model,
@@ -16,7 +23,15 @@ export async function initializeRoleModel(ctx: Context, agent: Agent, model: Rol
   if (!model) return
   if (agent.session.requestHeader() || agent.session.snapshotEvents().some(event => event.type === 'model/selection')) return
   const selected = await resolveRoleModel(ctx, model)
-  // Avoid selectModel because it mutates the global DSH default; inject the selection for the initial request only.
+  const modelSelector = agentModelSelector(agent)
+  if (modelSelector) {
+    if (!agent.session.requestHeader() && !agent.session.snapshotEvents().some(event => event.type === 'model/selection')) {
+      modelSelector.select(selected)
+      await ctx.sessionPersistence.flush()
+    }
+    return
+  }
+  // Older Hosts need an initial-step override; their controller also changes the global default.
   agent.session.append('model/selection', selected)
   let initial = true
   let assembled: ModelSelection | undefined
