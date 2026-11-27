@@ -37,21 +37,33 @@ export async function requestedModel(ctx: Context, text: string): Promise<ModelS
     }
     const qualifier = choice.match(/\s+(?:via|from|on)\s+(.+?)(?=\s+(?:at|with)\s+|[.!?,]|$)/i)
     const requestedProvider = qualifier && providerKey(qualifier[1]!)
-    const lookups = [normalize(qualifier ? choice.slice(0, qualifier.index) : choice)]
-    if (lookups[0]!.startsWith('model ')) lookups.push(lookups[0]!.slice(6))
-    catalogs ??= (await Promise.all(providers.map(async ({ id }) => {
+    const lookup = normalize(qualifier ? choice.slice(0, qualifier.index) : choice)
+    const lookups = lookup.startsWith('model ') ? [lookup, lookup.slice(6)] : [lookup]
+    const prefixes = providers.flatMap(({ id, name }) =>
+      [id, name].map(normalize).flatMap(label => {
+        const match = label && lookups.find(value => value.startsWith(`${label} `))
+        return match ? [{ id, label, rest: match.slice(label.length + 1) }] : []
+      }))
+    const longestPrefix = prefixes.reduce((max, { label }) => Math.max(max, label.length), 0)
+    const named = new Map(prefixes.filter(({ label }) => label.length === longestPrefix).map(({ id, rest }) => [id, rest]))
+    if (named.size > 1) throw new Error('The requested provider is ambiguous; specify an exact provider/model route.')
+    const list = async (ids: Iterable<string>) => (await Promise.all(Array.from(ids, async id => {
       try { return await ctx.llm.listModels(id) } catch { return [] }
     }))).flat()
-    const candidates = catalogs.flatMap(({ provider, id, name }) => {
+    const models = named.size ? await list(named.keys()) : (catalogs ??= await list(providers.map(({ id }) => id)))
+    const candidates = models.flatMap(({ provider, id, name }) => {
+      const scopedLookup = named.get(provider)
+      if (named.size && scopedLookup === undefined) return []
+      const modelLookups = scopedLookup === undefined ? lookups : [scopedLookup]
       const providerInfo = providers.find(entry => entry.id === provider)
       const providerMatches = !requestedProvider || providerKey(provider) === requestedProvider || providerKey(providerInfo?.name ?? '') === requestedProvider
       return [id, id.split('/').at(-1)!, name, name.replace(/^[^:]+:\s*/, '')].map(normalize).flatMap(label => {
-        const lookup = lookups.find(value => label && value.startsWith(label) && /^(?:$|[\s,.;!?，。])/.test(value.slice(label.length)))
+        const lookup = modelLookups.find(value => label && value.startsWith(label) && /^(?:$|[\s,.;!?，。])/.test(value.slice(label.length)))
         return lookup === undefined ? [] : [{ provider, id, providerMatches, length: label.length, effort: effortAfter(lookup.slice(label.length)) }]
       })
     })
     const eligible = candidates.filter(candidate => candidate.providerMatches)
-    if (candidates.length && !eligible.length) throw new Error('The requested model is not available from the named provider.')
+    if ((named.size || candidates.length) && !eligible.length) throw new Error('The requested model is not available from the named provider.')
     const longest = eligible.reduce((max, candidate) => Math.max(max, candidate.length), 0)
     const qualifiedEffort = qualifier ? effortAfter(choice.slice(qualifier.index! + qualifier[0].length)) : undefined
     for (const candidate of eligible) {
