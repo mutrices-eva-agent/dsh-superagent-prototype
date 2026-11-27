@@ -8,6 +8,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { vi, type Mock } from 'vitest'
 import type { UserMessage } from '@deepseek-ai/dsh-llm'
+import type { ModelSelection } from '@deepseek-ai/dsh-agent'
 import { Runtime } from '../../src/app/runtime.ts'
 import { Store } from '../../src/app/store.ts'
 import { SettingsSchema } from '../../src/policy.ts'
@@ -31,6 +32,7 @@ export function feishu(id: string, text: string, overrides: Record<string, unkno
 type RegisteredTool = { name: string; execute: (args: unknown, execution: { signal: AbortSignal }) => Promise<unknown> }
 type FakeAgent = {
   id: string; status: string; inbox: { nextTurn: UserMessage[]; nextStep: UserMessage[] }
+  model: { current(): ModelSelection | undefined; select(selection: ModelSelection): void }
   cancel: Mock; inject: Mock<(message: UserMessage) => void>; steer: Mock<(message: UserMessage) => void>; followup: Mock<(message: UserMessage) => void>
 }
 /** A text message, as DSH's job tools and subagents send their notices. */
@@ -210,7 +212,9 @@ export async function startRuntime(seed?: (store: Store) => void) {
         turn++
         take(true)
       })
-      const session = { id: sessionId, snapshotEvents: () => [], requestHeader: () => undefined, append: vi.fn() }
+      let selected: ModelSelection | undefined
+      const model = { current: () => selected, select: (value: ModelSelection) => { selected = value } }
+      const session = { id: sessionId, snapshotEvents: () => selected ? [{ type: 'model/selection', data: selected }] : [], requestHeader: () => undefined, append: vi.fn() }
       let status = 'idle'
       const idle: (() => void)[] = []
       // A cancel drops the inbox unless kept, and the turn it stops ends a moment later, which DSH says.
@@ -224,7 +228,7 @@ export async function startRuntime(seed?: (store: Store) => void) {
           ctx.emit('agent/status', { agent, status: 'idle' } as never)
         })
       })
-      agents.set(sessionId, { id: sessionId, ctx: agentCtx, inbox, followup: deliver('queue'), steer: deliver('steer'), inject: vi.fn(), session, cancel,
+      agents.set(sessionId, { id: sessionId, ctx: agentCtx, inbox, model, followup: deliver('queue'), steer: deliver('steer'), inject: vi.fn(), session, cancel,
         get status() { return status }, set status(next: string) { status = next; if (next === 'idle') for (const wake of idle.splice(0)) wake() },
         // Once its turn ended, as DSH's does.
         whenIdle: () => status === 'idle' ? Promise.resolve() : new Promise<void>(resolve => { idle.push(resolve) }) } as never)
@@ -238,7 +242,8 @@ export async function startRuntime(seed?: (store: Store) => void) {
   const webServer = { host: '127.0.0.1', port: 3082, register: (route: { handler: HttpHandler }) => { http = route.handler; return () => {} } }
   const jobs = jobRegistry(id => agents.get(id))
   const subagents = subagentRuntime(agents)
-  const services = { agents, llm: { resolveCallConfig: vi.fn(async (value: unknown) => value) }, sessionController: controller,
+  const services = { agents, llm: { resolveCallConfig: vi.fn(async (value: unknown) => value),
+    listProviders: vi.fn<() => { id: string; name: string }[]>(() => []) }, sessionController: controller,
     sessionPersistence: persistence, workspaceRegistry: { create: async (cwd: string) => ({ id: cwd }) }, permissionPresets: { set: () => {} }, subprocess, webServer,
     jobs: jobs.service, subagents: subagents.service }
   const ctx = new Context()
@@ -294,6 +299,6 @@ export async function startRuntime(seed?: (store: Store) => void) {
   /** A step of the worker claims what waits for it, and is cut off before the Session took it. */
   const claim = (sessionId: string) => { claims.get(sessionId)!() }
   return { runtime, ctx, directory, agents, tools, deliveries, relays, candidates, runTool, route, acceptedTicket, api, controller, subprocess, hooks, resolveDefault, stop,
-    jobs, subagents, step, claim }
+    jobs, subagents, step, claim, llm: services.llm }
 }
 export type Host = Awaited<ReturnType<typeof startRuntime>>

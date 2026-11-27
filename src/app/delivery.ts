@@ -1,15 +1,18 @@
 /** Idempotent message delivery to DSH agents across Session restarts. */
 import type { Context } from '@deepseek-ai/cordis'
-import type { Agent } from '@deepseek-ai/dsh-agent'
+import type { Agent, ModelSelection } from '@deepseek-ai/dsh-agent'
+import { agentModelSelector } from './role-models.ts'
 import { freezeMessage, MessageId, type ContextFormed, type UserMessage } from '@deepseek-ai/dsh-llm'
 import type { Session } from '@deepseek-ai/dsh-session'
 import type {} from '@deepseek-ai/dsh-session-persistence'
 
 declare module '@deepseek-ai/dsh-llm' {
   interface MessageSourceMap {
-    'dsh-superagent': { kind: 'dsh-superagent' } & ContextFormed
+    'dsh-superagent': { kind: 'dsh-superagent'; assignment?: true; modelPinned?: true } & ContextFormed
   }
 }
+
+export interface WorkerRouting { assignment?: true; model?: ModelSelection }
 
 type Seen = { ids: Set<string>; loaded?: Promise<void> }
 /** The id of the message delivered under `requestId`, the same on every retry. */
@@ -64,7 +67,7 @@ export class AgentDelivery {
   }
   /** Delivers once to the selected inbox, or injects into history without waking the agent, and flushes Session persistence before acknowledging the producer. */
   async send(agent: Agent, requestId: string, text: string, mode: 'queue' | 'steer' | { inject: string }, signal: AbortSignal, authorize?: () => void,
-    accepted?: () => void): Promise<void> {
+    accepted?: () => void, routing?: WorkerRouting): Promise<void> {
     signal.throwIfAborted()
     const seen = await this.history(agent)
     signal.throwIfAborted()
@@ -73,8 +76,15 @@ export class AgentDelivery {
     const id = messageId(requestId)
     const pending = [...agent.inbox.nextTurn, ...agent.inbox.nextStep].some(message => deliveryId(message) === id)
     if (!seen.ids.has(id) && !pending) {
+      if (routing?.model) {
+        const selector = agentModelSelector(agent)
+        if (!selector) throw new Error('The requested model requires a Harness host with per-Agent model selection.')
+        selector.select(routing.model)
+      }
       const source = typeof mode === 'object' ? { kind: 'dsh-superagent' as const, form: 'notice' as const, summary: mode.inject }
-        : { kind: 'dsh-superagent' as const, form: 'relay' as const }
+        : { kind: 'dsh-superagent' as const, form: 'relay' as const,
+            ...(routing?.assignment ? { assignment: true as const } : {}),
+            ...(routing?.model ? { modelPinned: true as const } : {}) }
       const message = freezeMessage({ id, role: 'user' as const, content: [{ type: 'text' as const, text }], source })
       if (typeof mode === 'object') { agent.inject(message); seen.ids.add(id) }
       else if (mode === 'steer') agent.steer(message)
