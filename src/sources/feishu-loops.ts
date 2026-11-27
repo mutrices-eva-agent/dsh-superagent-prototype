@@ -15,6 +15,12 @@ import { KV } from '../kv.ts'
 import { cursorAt, POLL_HORIZON_MS, polled, pollThreads as pollEach } from './poll.ts'
 import type { FeishuConfig } from './feishu.ts'
 
+const MentionSearchMessageSchema = z.looseObject({ message_id: z.string(), chat_id: z.string(), create_time: z.string(),
+  thread_id: z.string().optional(), deleted: z.boolean().optional() })
+const MentionSearchPageSchema = z.looseObject({
+  messages: z.array(z.unknown()).default([]), has_more: z.boolean().default(false), page_token: z.string().optional(),
+})
+
 export const runFeishu = (ctx: SourceContext, signal: AbortSignal): Promise<unknown> =>
   Promise.allSettled([watch, backfillLoop, chatNamesLoop].map(loop => loop(ctx, signal)))
 const enabled = (ctx: SourceContext): FeishuConfig | undefined => ctx.config<FeishuConfig>(SOURCE)
@@ -193,7 +199,30 @@ export async function backfillChat(ctx: SourceContext, chatId: string, direct: b
       if (page) pages.add(page)
     } while (page)
   }
+  const discoverMentionedTopics = async (): Promise<void> => {
+    let page: string | undefined
+    const pages = new Set<string>()
+    do {
+      if (signal.aborted) throw signal.reason
+      const searchTime = (time: string): string => new Date(time).toISOString().replace(/\.\d{3}Z$/, '+00:00')
+      const request = ['im', '+messages-search', '--chat-id', chatId, '--is-at-me', '--start', searchTime(since),
+        '--end', searchTime(until), '--page-size', '50', '--no-reactions', ...(page ? ['--page-token', page] : [])]
+      const result = MentionSearchPageSchema.parse(await commands.lark(request))
+      for (const message of validItems(MentionSearchMessageSchema, result.messages, tally)) {
+        if (message.chat_id !== chatId) throw new Error('Feishu mention search returned a message outside the requested chat')
+        if (message.deleted || !message.thread_id) continue
+        const at = feishuTime(message.create_time)
+        if (!(Date.parse(topics[message.thread_id] ?? '') >= Date.parse(at))) topics[message.thread_id] = at
+      }
+      const stuck = result.has_more && (!result.page_token || pages.has(result.page_token))
+      if (stuck) throw new Error('Feishu mention search pagination did not advance')
+      page = result.has_more ? result.page_token : undefined
+      if (page) pages.add(page)
+    } while (page)
+  }
   await scan('chat', chatId)
+  // Chat history omits replies in topics not seen before, so mentions-only recovery discovers them through mention search.
+  if (enabled(ctx)?.chats.find(chat => chat.chatId === chatId)?.listen === 'mentions') await discoverMentionedTopics()
   // A quiet topic is forgotten unless a subscribed Thread that is still polled follows it.
   const followed = new Set(ctx.threads.subscribed(SOURCE).filter(thread => polled(ctx, thread))
     .map(thread => String(thread.meta.threadId ?? ctx.triggers.latest(thread.key)?.meta.threadId ?? '')))
