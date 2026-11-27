@@ -13,6 +13,32 @@ function fixture() {
   return { ctx, listModels, resolveCallConfig }
 }
 
+it('given_a_provider_first_directive_when_the_model_name_is_shared_then_pins_the_named_route', async () => {
+  const { ctx, listModels } = fixture()
+  expect(await requestedModel(ctx, 'Use Gateway Service Model Alpha at high thinking.\nSay hi.')).toEqual({
+    provider: 'gateway', model: 'lab/model-alpha', reasoningEffort: 'high',
+  })
+  expect(listModels.mock.calls).toEqual([['gateway']])
+})
+
+it('given_a_provider_first_openrouter_directive_when_the_catalog_lists_argon_then_resolves_the_exact_model', async () => {
+  const ctx = new Context()
+  ctx.reflect.provide('llm', {
+    listProviders: () => [{ id: 'openrouter', name: 'OpenRouter' }],
+    listModels: async () => [{ provider: 'openrouter', id: 'google/gemini-4-argon', name: 'Google: Gemini 4 Argon' }],
+    resolveCallConfig: async (selection: object) => selection,
+  })
+  expect(await requestedModel(ctx, 'use openrouter gemini 4 argon')).toEqual({
+    provider: 'openrouter', model: 'google/gemini-4-argon',
+  })
+})
+
+it('given_a_provider_first_directive_when_its_catalog_has_no_matching_model_then_does_not_substitute', async () => {
+  const { ctx, resolveCallConfig } = fixture()
+  await expect(requestedModel(ctx, 'Use Gateway Service Missing Model')).rejects.toThrow('not available from the named provider')
+  expect(resolveCallConfig).not.toHaveBeenCalled()
+})
+
 it('given_a_qualified_model_when_requested_then_resolves_the_exact_route_without_catalog_discovery', async () => {
   const { ctx, listModels } = fixture()
   expect(await requestedModel(ctx, 'Please use `gateway/lab/model-alpha` at High thinking.')).toEqual({

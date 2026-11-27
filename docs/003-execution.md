@@ -142,7 +142,7 @@ A retry ends the current Assignment and starts a new one in the same Executor Se
 
 The Executor model seeds a new Session. A compatible router can override that starting choice before an assignment’s first request; without a decision the Session keeps its current model. Configure the router to accept `dsh-superagent` assignments to enable this.
 
-An explicit model directive in an admitted human request takes precedence. Use `Use provider/model at high thinking` (with the provider and exact model ID from Harness), or a unique model name from the local provider catalog. Use the fully qualified route if several providers offer the same name. A recognized route that cannot be resolved fails the assignment rather than silently substituting another model.
+An explicit model directive in the original human request for a new worker takes precedence. For example, put `Use OpenRouter Gemini 4 Argon at high thinking` on its own line before the task. Superagent looks up the model in the named provider’s catalog; if that provider has no matching model, it does not substitute another route. You can also use a unique model name or `Use provider/model at high thinking` with the exact IDs from Harness. Use the exact IDs to resolve ambiguity or select a route that is not listed in the catalog.
 ### Restart
 
 Running Assignments end with "host restarted" and new ones start with a recovery note that tells the Executor to check its directory, git history and GitHub before repeating any outside action, oldest Ticket first.
