@@ -1,12 +1,14 @@
 import { Context } from '@deepseek-ai/cordis'
+import type { Agent } from '@deepseek-ai/dsh-agent'
 import { bindScopeParent } from '@deepseek-ai/dsh-scope'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { DatabaseSync } from 'node:sqlite'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, expectTypeOf, it, vi } from 'vitest'
-import type { UserMessage } from '@deepseek-ai/dsh-llm'
+import { createUserMessage, type UserMessage } from '@deepseek-ai/dsh-llm'
 import { renderPrompt } from '@deepseek-ai/dsh-system-prompt'
+import { SessionSeq } from '@deepseek-ai/dsh-session'
 import { Runtime } from '../src/app/runtime.ts'
 import { jobRegistry } from './fixtures/host.ts'
 import { evalsHealth } from '../src/app/views/overview.ts'
@@ -238,6 +240,76 @@ it('relays an explicit member mention as a candidate and creates the ticket, ack
     thread: `feishu:${CHAT}:om_1`, text: trigger.text }) })
   expect(first.trigger).not.toHaveProperty('read')
   expect(await route({ kind: 'accept', trigger_id: trigger.id, title: 'again', worktree_name: worktreeName, acknowledgement: 'x' })).toMatchObject({ ticket: { ticket_id: ticket.id } })
+})
+
+function emitUserMessage(sessionId: string, message: UserMessage): void {
+  const ctx = (runtime as unknown as { ctx: Context }).ctx
+  const agent = agents.get(sessionId)! as unknown as Agent
+  ctx.emit('session/event', agent.session, { type: 'user/message', seq: SessionSeq(0), time: 0, surfaceOp: 'append', data: message })
+}
+
+async function operatorPrompt(id: string, text: string): Promise<string> {
+  emitUserMessage(runtime.masterId, createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'user', rpcId: id } }))
+  await runtime.idle()
+  return `interactive:${id}`
+}
+
+it('given a main Session, when the operator prompts and the host relays, then only the operator prompt becomes a candidate', async () => {
+  await operatorPrompt('rpc-interactive-1', 'Open a ticket from this chat')
+  await runtime.idle()
+  const trigger = runtime.store.triggers.get('interactive:rpc-interactive-1')
+  expect(trigger).toMatchObject({ source: 'interactive', human: true, addressed: 'direct', text: 'Open a ticket from this chat',
+    actor: { source: 'interactive', id: 'operator' }, threads: [{ source: 'interactive', id: `${runtime.masterId}:rpc-interactive-1` }] })
+  expect(relays(runtime.masterId).find(item => item.trigger_id === trigger?.id)).toMatchObject({ kind: 'candidate', strength: 'explicit' })
+  emitUserMessage(runtime.masterId, createUserMessage({ content: [{ type: 'text', text: 'internal relay' }], source: { kind: 'dsh-superagent', form: 'relay' } }))
+  await runtime.idle()
+  expect(runtime.store.read.recentTriggers(0, 100).filter(item => item.source === 'interactive')).toHaveLength(1)
+  const accepted = await route({ kind: 'accept', trigger_id: trigger!.id, title: 'Interactive request', worktree_name: 'interactive-request', acknowledgement: 'On it: creating this ticket from the operator chat.' })
+  const ticket = runtime.store.tickets.get((accepted.ticket as { ticket_id: string }).ticket_id)!
+  expect(ticket).toMatchObject({ mandate: { strength: 'explicit', actor: { source: 'interactive', id: 'operator' }, basis: { via: 'addressed', source: 'interactive', addressed: 'direct' } },
+    channels: [], origin: { triggerId: trigger!.id } })
+  expect(relays(`worker-${ticket.id}`)[0]).toMatchObject({ trigger: { trigger_id: trigger!.id, text: 'Open a ticket from this chat', thread: `interactive:${runtime.masterId}:rpc-interactive-1` } })
+})
+
+it('given an ended interactive ticket, when the operator asks about another ticket, then only the main Session receives the question', async () => {
+  const audit = await operatorPrompt('audit', 'Prepare the audit report')
+  const accepted = await route({ kind: 'accept', trigger_id: audit, title: 'Audit report', worktree_name: 'audit-report', acknowledgement: 'On it' })
+  const ticketId = (accepted.ticket as { ticket_id: string }).ticket_id
+  const worker = `worker-${ticketId}`
+  await runTool(worker, 'orchestrator_report', { state: 'ready', summary: 'Audit complete' })
+  // Older deployments retained subscriptions on the main Session's shared Thread.
+  subscribe(ticketId, { source: 'interactive', id: runtime.masterId })
+  deliveries.mockClear()
+
+  const blocker = await operatorPrompt('blocker', 'Why is the model-router ticket blocked?')
+  expect(deliveries.mock.calls.map(([delivery]) => delivery.sessionId)).toEqual([runtime.masterId])
+  expect(relays(runtime.masterId)).toEqual([expect.objectContaining({ kind: 'candidate', trigger_id: blocker, strength: 'explicit' })])
+  expect(runtime.store.tickets.get(ticketId)?.ended).toBeDefined()
+})
+
+it('given two tickets from the operator chat, when a new prompt is attached to one, then only that worker receives and can read it', async () => {
+  const accept = async (name: string) => {
+    const triggerId = await operatorPrompt(name, `Start the ${name} work`)
+    const accepted = await route({ kind: 'accept', trigger_id: triggerId, title: name, worktree_name: name, acknowledgement: 'On it' })
+    return `worker-${(accepted.ticket as { ticket_id: string }).ticket_id}`
+  }
+  const router = await accept('model-router')
+  const unrelated = await accept('audit-report')
+  deliveries.mockClear()
+
+  const blocker = await operatorPrompt('router-blocker', 'Why is the model-router ticket blocked?')
+  expect(deliveries.mock.calls.map(([delivery]) => delivery.sessionId)).toEqual([runtime.masterId])
+  await route({ kind: 'attach', trigger_id: blocker, ticket_id: router.slice('worker-'.length) })
+  expect(relays(router)).toEqual([expect.objectContaining({ trigger_id: blocker })])
+  expect(relays(unrelated)).toEqual([])
+  const resource = `trigger/${blocker}`
+  await expect(runTool(router, 'orchestrator_read', { resource, offset: 0 })).resolves.toMatchObject({ trigger_id: blocker })
+  await expect(runTool(unrelated, 'orchestrator_read', { resource, offset: 0 })).rejects.toThrow('Trigger does not belong to this worker')
+
+  deliveries.mockClear()
+  const next = await operatorPrompt('another-request', 'Open a separate ticket')
+  expect(deliveries.mock.calls.map(([delivery]) => delivery.sessionId)).toEqual([runtime.masterId])
+  expect(relays(runtime.masterId)).toEqual([expect.objectContaining({ kind: 'candidate', trigger_id: next })])
 })
 
 it('fans a person\'s later thread message out to the live worker as context and tells the orchestrator, without an Eval', async () => {

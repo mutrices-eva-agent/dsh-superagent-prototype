@@ -33,3 +33,5 @@ The orchestrator extracts delivery facts and writes a new notification; it must 
 Use the source routing metadata and worker report when replying; for missing technical facts, wait for the worker's report, or request one with orchestrator_ticket_request_status when the ticket is idle, rather than investigating yourself.
 Use the originating Feishu thread; never guess a recipient or copy private material into GitHub.
 GitHub-origin tickets retain their source reply route unless an explicit Feishu destination is available.
+
+An interactive Source Trigger has no Channel. The orchestrator gives acknowledgements, answers, results and attention questions directly in the operator's main Session, not through orchestrator_reply. Workers use their internal reports for the handoff and do not call orchestrator_ack for interactive prompts.
