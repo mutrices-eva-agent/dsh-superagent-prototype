@@ -6,7 +6,8 @@ import { scopeParentOf } from '@deepseek-ai/dsh-scope'
 import type { SessionId } from '@deepseek-ai/dsh-session'
 import { dirname } from 'node:path'
 import { z } from 'zod'
-import { key, liveTicket, type Ticket } from '../core/index.ts'
+import { key, liveTicket, type ReceiveResult, type Ticket, type Trigger } from '../core/index.ts'
+import { interactiveTrigger } from '../sources/interactive.ts'
 import { mandateInstructions, ticketOfSession } from '../executor/dsh.ts'
 import type { HealthEntry } from '../infra/health.ts'
 import { AgentDelivery, messageId, type WorkerRouting } from './delivery.ts'
@@ -36,6 +37,8 @@ export interface SessionsHost {
   environment(ticket: Ticket): Variable[]
   /** Tools to register on the main Session (`ticket === undefined`) or on `ticket`'s worker Session. */
   tools(agent: Agent, ticket?: Ticket): Tool[]
+  /** Ingests a genuine prompt written in the main Session as an interactive Source trigger. */
+  receive(trigger: Trigger): ReceiveResult
 }
 
 /**
@@ -113,6 +116,10 @@ export class Sessions {
     })
     ctx.on('session/event', (session, event) => {
       const agent = ctx.agents.get(session.id)
+      if (agent?.id === this.host.masterId && event.type === 'user/message') {
+        const trigger = interactiveTrigger(session.id, event.data)
+        if (trigger) this.host.receive(trigger)
+      }
       const binding = agent && agent.session === session ? this.bindings.get(agent) : undefined
       if (!agent || !binding || binding.subagent) return
       this.retryHealth.observe(agent.id, event)

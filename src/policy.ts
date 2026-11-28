@@ -9,6 +9,7 @@ import { key, type AssessmentOutcome, type Mandate, type Policy, type PolicyEffe
   type Trigger, type ActorRef, type GateResult } from './core/index.ts'
 import { sameName } from './infra/text.ts'
 import { WORKER_COMMANDS } from './infra/environment.ts'
+import { INTERACTIVE_ACTOR, INTERACTIVE_SOURCE } from './sources/interactive.ts'
 
 export const RuleIdSchema = z.string().regex(/^[a-zA-Z0-9_-]{1,80}$/)
 export const RuleMatchSchema = z.object({ rule_id: RuleIdSchema, reason: z.string().trim().min(1).max(500) }).strict()
@@ -117,6 +118,10 @@ export function policyVersion(settings: Settings): string {
   return key(POLICY_REVISION, JSON.stringify({ rules: settings.policy.rules, mode: settings.eval.mode, sources: settings.policy.sources }))
 }
 export function allowedSender(settings: Settings, actor: ActorRef): z.infer<typeof AllowedSchema> | undefined {
+  // The local operator Session is already the deployment's trusted human boundary.
+  // This identity belongs only to genuine user RPC prompts converted by Sessions;
+  // no external Source or injected relay can use it.
+  if (actor.source === INTERACTIVE_SOURCE && actor.id === INTERACTIVE_ACTOR) return { id: INTERACTIVE_ACTOR, name: 'Interactive operator' }
   return settings.policy.sources[actor.source]?.allowed.find(entry => sameName(entry.id, actor.id))
 }
 /** Look up `actor` in the Source's `bots` policy list (validated by the Source's kind), whose messages are admitted as inferred candidates at most. */

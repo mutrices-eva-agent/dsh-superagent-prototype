@@ -226,6 +226,12 @@ The process environment that setup writes:
 
 A file in `worker-bin` or `worker-gitconfig` that dsh-superagent did not write stops setup. A Ticket directory inside a git repository whose own configuration adds credentials fails the Ticket.
 
+## Interactive operator Session
+
+Each text prompt in the main Session becomes a direct-addressed Trigger on its own Thread. The main Session can answer it, start new work, or explicitly attach it to one existing Ticket. Accepting or attaching a prompt does not subscribe the worker to later prompts in that Session. Existing shared interactive Threads from older deployments are retained for history; new prompts do not enter them.
+
+The local operator does not need a Feishu or GitHub allow-list entry. Internal relays and notices do not become Triggers. This Source has no external Channel; answer the operator in the main Session. Only text is routed to a Ticket.
+
 ## Try it
 
 From an allowed GitHub account, open an Issue or post a comment containing `@<agent login> <request>`. Within a polling interval (one minute by default), Overview should show a Ticket. The agent acknowledges the request, works in its own Session and directory, and delivers in the original conversation. For Feishu, mention the bot in a configured chat.
